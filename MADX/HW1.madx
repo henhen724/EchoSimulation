@@ -1,0 +1,26 @@
+qfType: QUADRUPOLE, L=1.5, K1 := kf;
+qdType: QUADRUPOLE, L=1.5, K1 := kd;
+
+fodo:SEQUENCE, REFER=exit, L=10;
+qf: qfType, at = 5;
+qd: qdType, at = 10;
+ENDSEQUENCE;
+
+kf = +0.2985;
+kd = -0.2985;
+
+beam, particle=proton, energy=7001;
+
+use, SEQUENCE = fodo;
+twiss;
+plot, HAXIS=s, VAXIS=betx, bety;
+
+MATCH, SEQUENCE=fodo;
+    GLOBAL, Q1 = .25;
+    GLOBAL, Q2 = .25;
+    VARY, NAME=kf, STEP=0.00001;
+    VARY, NAME=kd, STEP=0.00001;
+    LMDIF, CALLS=50, TOLERANCE=1e-8;
+ENDMATCH;
+
+QUIT;
