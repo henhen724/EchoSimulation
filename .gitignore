@@ -1,4 +1,6 @@
 **.log
 **.dat
 **.ps
+**.pyc
 **.vscode**
+**__pycache__**
