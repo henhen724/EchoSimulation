@@ -1,5 +1,6 @@
+import numpy as np
 import cupy as cp
-from math import comb, factorial, ceil
+from math import comb, factorial, ceil, floor
 
 from astropy import units as u
 
@@ -38,26 +39,37 @@ def M_to_E(M, e):
                                               k]*cp.einsum("ij,i->ij", sins_of_M[n-2*k], cp.power(e, n))
     return M + series
 
+# The maximum GPU memory is required during the M_to_E step
+# The following arrays are in memory
+# time_array (steps)
+# e (size) -> sizeof(float)*size
+# a (size) -> sizeof(float)*size
+# T (size) -> sizeof(float)*size
+# mean_anamoly (size, steps) -> sizeof(float)*size*steps
+# series (size, steps) -> sizeof(float)*size*steps
+# sins_of_M (CONST_ROWS+1, size, steps) -> sizeof(float)*(CONST_ROWS+1)*size*steps
+# So the total Memory is sizeof(float)*((CONST_ROWS+1 + 2)*size*steps + 3*size)
+FLOAT_SIZE = 8
 
-def propagate(belt, time_of_flight, timestep):
-    before_init = time.time()
-    num_of_steps = int(time_of_flight.to(u.s)/timestep.to(u.s))
-    # if num_of_steps*CONST_ROWS*belt.size*8 > cp.get_default_memory_pool().get_limit():
-    #     LIMIT = cp.get_default_memory_pool().get_limit()
-    #     gpu_mem_swap_iterations = int(
-    #         ceil(num_of_steps*CONST_ROWS*belt.size*8.0/LIMIT))
+def _propagate_single_timestep_memory_(size):
+    return FLOAT_SIZE*(CONST_ROWS+3)*size
 
-    time_array = cp.linspace(0.0, time_of_flight, num_of_steps)
-    size = belt.size
-    final_mean_anamoly = cp.zeros(size)
-    e = cp.zeros(size)
-    a = cp.zeros(size)
-    T = cp.zeros(size)
+def _propagate_fixed_memory_(size):
+    return FLOAT_SIZE*3*size
+
+def _propagate_single_gpu_memory_(belt, time_array, num_of_steps, initial_mean_anamoly=None):
+
+    time_array = cp.array(time_array)
 
     before_obj_extract = time.time()
 
+    if initial_mean_anamoly is None:
+        initial_mean_anamoly = cp.array(belt.M.to(u.rad).value)
+    else:
+        initial_mean_anamoly = cp.array(initial_mean_anamoly)
+
     e = cp.array(belt.ecc.value)
-    initial_mean_anamoly = cp.array(belt.M.to(u.rad).value)
+    
     a = cp.array(belt.a.to(u.km).value)
     T = (2*cp.pi*cp.power(cp.array(belt.a.to(u.km).value), 3.0/2.0) /
          cp.sqrt(belt.micro.to(u.km**3/u.s**2).value))
@@ -67,7 +79,6 @@ def propagate(belt, time_of_flight, timestep):
     fraction_of_period = cp.einsum("i,j->ij", 1/T, time_array)
     mean_anamoly = (fraction_of_period % 1)*2*cp.pi + \
         initial_mean_anamoly[:, cp.newaxis]
-    final_mean_anamoly = mean_anamoly[:, num_of_steps - 1]
     eccentric_anamoly = M_to_E(mean_anamoly, e)
     delta_r = -cp.einsum("i,ik -> ik", e, cp.cos(eccentric_anamoly))
     radiuses = cp.einsum("i,ik -> ik", a, (1 + delta_r))
@@ -75,12 +86,35 @@ def propagate(belt, time_of_flight, timestep):
     r_mon_denom = cp.einsum("i,ik -> ik", T, 1 + delta_r)
     radial_momenta = r_mom_num/r_mon_denom
 
+    final_mean_anamoly = mean_anamoly[:, num_of_steps - 1]
+
     before_ret = time.time()
 
-    print("Initialization: ", before_obj_extract - before_init, " Obj Extract: ",
-          before_E_calc - before_obj_extract, " E Calc: ", before_ret - before_E_calc)
+    print(" Obj Extract: ", before_E_calc - before_obj_extract, " E Calc: ", before_ret - before_E_calc)
 
     return cp.asnumpy(radiuses)*u.km, cp.asnumpy(radial_momenta)*u.km/u.s, cp.asnumpy(final_mean_anamoly)*u.rad
+
+
+def propagate(belt, time_of_flight, timestep):
+    
+    num_of_steps = int(time_of_flight.to(u.s)/timestep.to(u.s))
+
+    memory_gpu_size = cp.get_default_memory_pool().get_limit()
+    max_steps_in_one_gpu_memory = floor((memory_gpu_size - _propagate_fixed_memory_(belt.size))/_propagate_single_timestep_memory_(belt.size))
+    memory_frames = int(floor(num_of_steps/max_steps_in_one_gpu_memory))
+
+    time_array = np.linspace(0.0, time_of_flight, num_of_steps)
+
+    radiuses = np.zeros((belt.size, num_of_steps))
+    radial_momentum = np.zeros((belt.size, num_of_steps))
+    final_mean_anamoly = np.zeros(belt.size)
+
+    for i in range(0, memory_frames):
+        start_index = 
+        end_index = 
+
+    time_array = cp.linspace(0.0, time_of_flight, num_of_steps)
+    
 
 
 def average_scaler(quantity, start=None, end=None):
