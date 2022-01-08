@@ -22,22 +22,106 @@ for n in range(1, CONST_ROWS+1):
                   KEPLER_EQ_INV_CONSTANTS[n, k], " for ", n, ",", k)
 
 
-def nu_to_E(nu, e):
-    return 2*cp.arctan(cp.sqrt((1 - e)/(1 + e))*cp.tan(nu/2.0))
+# def arctan(array):
+
+#     gpu_memory = cp.get_default_memory_pool()
+
+#     gpu_memory_size = gpu_memory.get_limit()
+
+#     max_steps_in_one_gpu_memory = floor((
+#         gpu_memory_size - 64*array.shape[0]*array.shape[1])/3000)
+
+#     num_of_memory_frames = int(
+#         ceil(array.shape[0]/max_steps_in_one_gpu_memory))
+#     print(array.shape)
+#     answer = cp.zeros(array.shape)
+
+#     for timestep in range(0, array.shape[1]):
+#         for memory_frame in range(0, num_of_memory_frames):
+#             start_index = memory_frame*max_steps_in_one_gpu_memory
+#             end_index = min((memory_frame+1) *
+#                             max_steps_in_one_gpu_memory, array.shape[0])
+#             answer[start_index:end_index, timestep] = cp.arctan(
+#                 array[start_index:end_index, timestep])
+#     gpu_memory.free_all_blocks()
+
+#     return answer
+
+def nu_to_E(nu, e, numpyOutput=False):
+    if type(nu) == np.ndarray:
+        nu = cp.array(nu)
+    if type(e) == np.ndarray:
+        e = cp.array(e)
+
+    rst = 2.0*cp.arctan(cp.einsum("i,ik->ik",
+                                  cp.sqrt((1 - e)/(1 + e)), cp.tan(nu/2.0)))
+
+    if numpyOutput:
+        rst = cp.asnumpy(rst)
+        gpu_memory = cp.get_default_memory_pool()
+        gpu_memory.free_all_blocks()
+        return rst
+    else:
+        return rst
 
 
-def E_to_M(E, e):
-    return E - e*cp.sin(E)
+def E_to_nu(E, e, numpyOutput=False):
+    if type(E) == np.ndarray:
+        E = cp.array(E)
+    if type(e) == np.ndarray:
+        e = cp.array(e)
+
+    rst = 2.0 * cp.arctan(cp.einsum("i,ik->ik",
+                                    cp.sqrt((1 + e) / (1 - e)), cp.tan(E / 2.0)))
+
+    if numpyOutput:
+        rst = cp.asnumpy(rst)
+        gpu_memory = cp.get_default_memory_pool()
+        gpu_memory.free_all_blocks()
+        return rst
+    else:
+        return rst
 
 
-def M_to_E(M, e):
+def E_to_M(E, e, numpyOutput=False):
+    if type(E) == np.ndarray:
+        E = cp.array(E)
+    if type(e) == np.ndarray:
+        e = cp.array(e)
+
+    rst = E - e*cp.sin(E)
+
+    if numpyOutput:
+        rst = cp.asnumpy(rst)
+        gpu_memory = cp.get_default_memory_pool()
+        gpu_memory.free_all_blocks()
+        return rst
+    else:
+        return rst
+
+
+def M_to_E(M, e, numpyOutput=False):
+    if type(M) == np.ndarray:
+        M = cp.array(M)
+    if type(e) == np.ndarray:
+        e = cp.array(e)
+    print("M's shape is ", M.shape, ". e's shape is ", e.shape)
     series = cp.zeros(M.shape)
     sins_of_M = cp.sin(cp.einsum("i,jk->ijk", cp.arange(0, CONST_ROWS+1), M))
     for n in range(1, CONST_ROWS):
         for k in range(0, int(cp.ceil(n/2))):
             series += KEPLER_EQ_INV_CONSTANTS[n,
                                               k]*cp.einsum("ij,i->ij", sins_of_M[n-2*k], cp.power(e, n))
-    return M + series
+
+    rst = M + series
+
+    if numpyOutput:
+        rst = cp.asnumpy(rst)
+        gpu_memory = cp.get_default_memory_pool()
+        gpu_memory.free_all_blocks()
+        return rst
+    else:
+        return rst
 
 
 # The maximum GPU memory is required during the M_to_E step
@@ -81,8 +165,6 @@ def _propagate_single_gpu_memory_(belt, time_array, num_of_steps):
     mean_anamoly = (fraction_of_period % 1)*2*cp.pi + \
         initial_mean_anamoly[:, cp.newaxis]
 
-    print(mean_anamoly)
-
     eccentric_anamoly = M_to_E(mean_anamoly, e)
     delta_r = -cp.einsum("i,ik -> ik", e, cp.cos(eccentric_anamoly))
     radiuses = cp.einsum("i,ik -> ik", a, (1 + delta_r))
@@ -94,8 +176,8 @@ def _propagate_single_gpu_memory_(belt, time_array, num_of_steps):
 
     before_ret = time.time()
 
-    print(" Obj Extract: ", before_E_calc - before_obj_extract,
-          " E Calc: ", before_ret - before_E_calc)
+    # print(" Obj Extract: ", before_E_calc - before_obj_extract,
+    #       " E Calc: ", before_ret - before_E_calc)
 
     return cp.asnumpy(radiuses)*u.km, cp.asnumpy(radial_momenta)*u.km/u.s, cp.asnumpy(final_mean_anamoly)*u.rad
 
@@ -104,12 +186,14 @@ def propagate(belt, time_of_flight, timestep):
 
     num_of_steps = int(time_of_flight.to(u.s)/timestep.to(u.s))
 
-    memory_gpu_size = cp.get_default_memory_pool().get_limit()
+    gpu_memory = cp.get_default_memory_pool()
 
-    print("GPU memory size: ", memory_gpu_size)
+    gpu_memory_size = gpu_memory.get_limit()
+
+    print("GPU memory size: ", gpu_memory_size)
 
     max_steps_in_one_gpu_memory = floor(
-        (memory_gpu_size - _propagate_fixed_memory_(belt.size))/_propagate_single_timestep_memory_(belt.size))
+        (gpu_memory_size - _propagate_fixed_memory_(belt.size))/_propagate_single_timestep_memory_(belt.size))
     memory_frames = int(ceil(num_of_steps/max_steps_in_one_gpu_memory))
 
     print("Running ", memory_frames, " memory frames")
@@ -128,6 +212,8 @@ def propagate(belt, time_of_flight, timestep):
         radiuses[:, start_index:end_index], radial_momentum[:, start_index:end_index], final_mean_anamoly = _propagate_single_gpu_memory_(
             belt, time_array[start_index:end_index], end_index-start_index)
 
+    gpu_memory.free_all_blocks()
+
     return cp.asnumpy(radiuses)*u.km, cp.asnumpy(radial_momentum)*u.km/u.s, cp.asnumpy(final_mean_anamoly)*u.rad
 
 
@@ -135,7 +221,7 @@ def average_scaler(quantity, start=None, end=None):
     if start is None:
         start = 0
     if end is None:
-        end = quantity.shape[2]
+        end = quantity.shape[0]
     return cp.asnumpy(cp.einsum('ij->j', quantity[:, start:end].value))*quantity.unit/quantity.shape[0]
 
 
@@ -143,5 +229,5 @@ def average_3vector(quantity, start=None, end=None):
     if start is None:
         start = 0
     if end is None:
-        end = quantity.shape[2]
+        end = quantity.shape[0]
     return cp.asnumpy(cp.einsum('ijk->jk', quantity[:, start:end, :].value))*quantity.unit/quantity.shape[0]
