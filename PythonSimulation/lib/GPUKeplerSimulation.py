@@ -55,7 +55,7 @@ FLOAT_SIZE = 8
 
 
 def _propagate_single_timestep_memory_(size):
-    return FLOAT_SIZE*(CONST_ROWS+20)*size
+    return FLOAT_SIZE*(CONST_ROWS+40)*size
 
 
 def _propagate_fixed_memory_(size):
@@ -66,7 +66,7 @@ def _propagate_single_gpu_run_(belt, time_array, num_of_steps, initial_mean_anam
 
     time_array = cp.array(time_array)
 
-    before_obj_extract = time.time()
+    # before_obj_extract = time.time()
 
     if initial_mean_anamoly is None:
         initial_mean_anamoly = cp.array(belt.M.to(u.rad).value)
@@ -79,11 +79,11 @@ def _propagate_single_gpu_run_(belt, time_array, num_of_steps, initial_mean_anam
     T = (2*cp.pi*cp.power(cp.array(belt.a.to(u.km).value), 3.0/2.0) /
          cp.sqrt(belt.micro.to(u.km**3/u.s**2).value))
 
-    before_E_calc = time.time()
+    # before_E_calc = time.time()
 
-    fraction_of_period = cp.einsum("i,j->ij", 1/T, time_array)
-    mean_anamoly = (fraction_of_period % 1)*2*cp.pi + \
-        initial_mean_anamoly[:, cp.newaxis]
+    fraction_of_period = cp.einsum("i,j->ij", 1/T, time_array) + cp.einsum(
+        "i,j->ij", initial_mean_anamoly, cp.repeat(cp.array(1/(2*cp.pi)), num_of_steps))
+    mean_anamoly = (fraction_of_period % 1)*2*cp.pi
     eccentric_anamoly = M_to_E(mean_anamoly, e)
     delta_r = -cp.einsum("i,ik -> ik", e, cp.cos(eccentric_anamoly))
     radiuses = cp.einsum("i,ik -> ik", a, (1 + delta_r))
@@ -93,20 +93,24 @@ def _propagate_single_gpu_run_(belt, time_array, num_of_steps, initial_mean_anam
 
     final_mean_anamoly = mean_anamoly[:, num_of_steps - 1]
 
-    before_ret = time.time()
+    # before_ret = time.time()
 
-    print(" Obj Extract: ", before_E_calc - before_obj_extract,
-          " E Calc: ", before_ret - before_E_calc)
+    # print(" Obj Extract: ", before_E_calc - before_obj_extract,
+    #       " E Calc: ", before_ret - before_E_calc)
 
     return cp.asnumpy(radiuses)*u.km, cp.asnumpy(radial_momenta)*u.km/u.s, cp.asnumpy(final_mean_anamoly)*u.rad
 
 
 def propagate(belt, time_of_flight, timestep):
+    # before_mempool = time.time()
 
     num_of_steps = int(time_of_flight.to(u.s)/timestep.to(u.s))
 
     mempool = cp.get_default_memory_pool()
     memory_gpu_size = mempool.get_limit()
+
+    # before_batching = time.time()
+
     if memory_gpu_size == 0:
         mempool.set_limit(fraction=0.8)
         memory_gpu_size = mempool.get_limit()
@@ -114,30 +118,35 @@ def propagate(belt, time_of_flight, timestep):
         (memory_gpu_size - _propagate_fixed_memory_(belt.size))/_propagate_single_timestep_memory_(belt.size))
     memory_frames = int(ceil(num_of_steps/max_steps_in_one_gpu_memory))
 
-    print("MEM LIMIT: ", memory_gpu_size)
+    # print("MEM LIMIT: ", memory_gpu_size)
 
-    print("FIXED MEM: ", _propagate_fixed_memory_(belt.size),
-          "  STEP MEMORY: ", _propagate_single_timestep_memory_(belt.size))
+    # print("FIXED MEM: ", _propagate_fixed_memory_(belt.size),
+    #       "  STEP MEMORY: ", _propagate_single_timestep_memory_(belt.size))
 
-    print("Max Steps: ", (memory_gpu_size - _propagate_fixed_memory_(belt.size))/_propagate_single_timestep_memory_(belt.size),
-          "  Frames: ", memory_frames)
+    # print("Max Steps: ", (memory_gpu_size - _propagate_fixed_memory_(belt.size))/_propagate_single_timestep_memory_(belt.size),
+    #       "  Frames: ", memory_frames)
+
+    # before_init = time.time()
 
     time_array = np.linspace(0.0, time_of_flight, num_of_steps)
 
-    radiuses = np.zeros((belt.size, num_of_steps))*u.km
-    radial_momentum = np.zeros((belt.size, num_of_steps))*u.km/u.s
+    radiuses = np.empty((belt.size, num_of_steps))*u.km
+    radial_momentum = np.empty((belt.size, num_of_steps))*u.km/u.s
     final_mean_anamoly = None
 
-    print("GPU Memory in use before frames: ", mempool.used_bytes())
+    # print("Timing: Mempool ", before_batching-before_mempool, ", Batching ",
+    #       before_init-before_batching, ", Initialization ", time.time() - before_init)
+
+    # print("GPU Memory in use before frames: ", mempool.used_bytes())
 
     for i in range(0, memory_frames):
         start_index = i*max_steps_in_one_gpu_memory
         end_index = min((i+1)*max_steps_in_one_gpu_memory, num_of_steps)
-        print("Running propagation from ", start_index, " to ", end_index)
+        # print("Running propagation from ", start_index, " to ", end_index)
         radiuses[:, start_index:end_index], radial_momentum[:, start_index:end_index], final_mean_anamoly = _propagate_single_gpu_run_(
-            belt, time_array[start_index:end_index], end_index-start_index, initial_mean_anamoly=final_mean_anamoly)
+            belt, time_array[start_index:end_index], end_index-start_index)
         mempool.free_all_blocks()
-        print("After clearing: ", mempool.used_bytes())
+        # print("After clearing: ", mempool.used_bytes())
 
     return radiuses, radial_momentum, final_mean_anamoly
 
