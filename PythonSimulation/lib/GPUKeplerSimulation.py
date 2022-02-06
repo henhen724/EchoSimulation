@@ -75,7 +75,7 @@ def E_to_nu(E, e, numpyOutput=False):
                                     cp.sqrt((1 + e) / (1 - e)), cp.tan(E / 2.0)))
 
     if numpyOutput:
-        rst = cp.asnumpy(rst)
+        rst: np.ndarray = cp.asnumpy(rst)
         gpu_memory = cp.get_default_memory_pool()
         gpu_memory.free_all_blocks()
         return rst
@@ -89,7 +89,7 @@ def E_to_M(E, e, numpyOutput=False):
     if type(e) == np.ndarray:
         e = cp.array(e)
 
-    rst = E - e*cp.sin(E)
+    rst = E - cp.einsum("i,ik->ik", e, cp.sin(E))
 
     if numpyOutput:
         rst = cp.asnumpy(rst)
@@ -105,7 +105,7 @@ def M_to_E(M, e, numpyOutput=False):
         M = cp.array(M)
     if type(e) == np.ndarray:
         e = cp.array(e)
-    print("M's shape is ", M.shape, ". e's shape is ", e.shape)
+    # print("M's shape is ", M.shape, ". e's shape is ", e.shape)
     series = cp.zeros(M.shape)
     sins_of_M = cp.sin(cp.einsum("i,jk->ijk", cp.arange(0, CONST_ROWS+1), M))
     for n in range(1, CONST_ROWS):
@@ -190,13 +190,13 @@ def propagate(belt, time_of_flight, timestep):
 
     gpu_memory_size = gpu_memory.get_limit()
 
-    print("GPU memory size: ", gpu_memory_size)
+    # print("GPU memory size: ", gpu_memory_size)
 
     max_steps_in_one_gpu_memory = floor(
         (gpu_memory_size - _propagate_fixed_memory_(belt.size))/_propagate_single_timestep_memory_(belt.size))
     memory_frames = int(ceil(num_of_steps/max_steps_in_one_gpu_memory))
 
-    print("Running ", memory_frames, " memory frames")
+    # print("Running ", memory_frames, " memory frames")
 
     time_array = np.linspace(0.0, time_of_flight, num_of_steps)
 
